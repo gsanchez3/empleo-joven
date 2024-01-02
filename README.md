@@ -2,6 +2,7 @@
 Codigos para el procesamiento de las bases y el tablero de empleo joven
 
 Este repositorio tiene los codigos para actualizar todas las bases de empleo joven:
+
 a) correr-desde-cero: Esta carpeta es para generar todas las bases la primera vez.
   1. empleo_joven_v4. Este codigo genera las bases originales tomando todas las mectras. Ajusta los datos de las mectras fallidas y guarda la version beta con toda la informacion de los jovenes.
   2. calc_porc_total_todo. Este codigo calcula los puestos totales por cada clae2 y provincia. Dato que luego sera utilizado en el tablero. Ajusta tambien las mectras fallidas y guarda ese dato para proximos procesamientos. Al mergear con la version beta del paso 1, se genera la version final para el tablero: "clae2_prov_universos.csv".
