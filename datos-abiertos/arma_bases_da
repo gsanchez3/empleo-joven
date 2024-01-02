@@ -1,0 +1,379 @@
+rm(list = ls())
+
+library(data.table)     # manipular grandes conjuntos de datos
+library(lubridate)      # manipular fechas
+library(openxlsx)       # leer archivos .xlsx  
+library(plyr)
+library(tidyverse)
+library(fst)
+library(ggplot2)
+library(Mectritas)
+library(DatosAbiertosCEP)
+options(scipen=999) 
+
+# Vamos a generar las series de datos para datos abiertos
+
+# Seteamos ruta general
+ruta_pc <- "C:/Users/Usuario/"
+ruta <- paste0(ruta_pc,"Documents/Cep Pedidos/Empleo_joven/")
+setwd(ruta)
+
+# Seteamos ruta de bases
+ruta_bases <- "C:/Users/Usuario/Documents/Bases CEP XXI/"
+
+
+# Necesito cortar bases a diferentes niveles, por diferentes variables y por distintos universos
+# Ademas hay q considerar las mectras fallidas y el secreto estadistico
+
+## Llamo los data tables para ir agregando. Por otro lado, hay q eliminar las descripciones letra_desc y clae2_desc
+
+data_grupo <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='grupo', detectDates=T))
+data_letra <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='letra', detectDates=T))
+data_letra$letra_desc <- NULL
+data_provincia <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='provincia', detectDates=T))
+data_provincia_letra <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='provincia_letra', detectDates=T)) 
+data_provincia_letra$letra_desc <- NULL
+data_letra_clae2 <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='letra_clae2', detectDates=T))
+data_letra_clae2$letra_desc <- NULL
+data_letra_clae2$clae2_desc <- NULL
+#data_prov_letra_clae2 <- setDT(fread(paste0(ruta, "clae2_prov_universos_beta.csv")))
+#data_prov_letra_clae2 <- data_prov_letra_clae2[,mes:=as.Date(mes)]
+
+
+# tengo 6 bases distintas, a todas voy a tener que hacerles lo mismo a nivel letra y clae2, para cada universo
+# Paciencia, a no desesperar y vamos paso a paso... 
+
+
+
+# Empezamos con la primer cosa necesaria que es pasar la letras NA, T y U a Z. y sus correspondientes claes 2
+# Tambien debo mandar la letra Administracion publica, letra O a otros cuando estoy en privado o total empresas
+
+
+
+arregla_letras <- function(data){
+  
+  data <- data %>%
+    mutate(letra = case_when((is.na(letra) | letra == 'T' | letra == 'U' | 
+                            (letra == 'O' & (Grupo == 'Privado' | Grupo == 'Total empresas' ))) ~ "Z",
+                             TRUE ~ letra))
+  return(data)
+}
+
+
+
+
+arregla_clae2 <- function(data){
+  
+  data <- data %>%
+    mutate(clae2 = case_when((is.na(clae2) | clae2 == '97' | clae2 == '99' |
+                                (clae2 == '84' & (Grupo == 'Privado' | Grupo == 'Total empresas' ))) ~ 999,
+                             TRUE ~ clae2))
+  return(data)
+}
+
+data_letra <- arregla_letras(data_letra)
+data_provincia_letra <- arregla_letras(data_provincia_letra)
+data_letra_clae2 <- arregla_letras(data_letra_clae2)
+data_letra_clae2 <- arregla_clae2(data_letra_clae2)
+
+
+# Empecemos por las operaciones que hay que hacerle a todas. Para ello probamos una funcion para la limpieza que hay q hacerle a todas
+# y luego un loop para hacerlo en todas las bases
+
+limpia_bases <- function(data){
+  
+  data$empleadoras <- NULL
+  data$agencias <- NULL
+  data$anio <- NULL
+  data$Remu_media_cons <- NULL
+  data$Remu_mediana_cons <- NULL
+  setnames(data, 'mes', 'fecha')
+  setnames(data, 'Remu_media', 'w_mean')
+  setnames(data, 'Remu_mediana', 'w_median')
+  data <- data[, share_mujeres:= round(mujeres/puestos, 2)]
+  data <- data %>% mutate(across(.cols=c(w_mean, w_median), round))
+  data$mujeres <- NULL
+  
+  return(data)
+}
+
+# Esto deberia hacerlo con una funcion pero no la encontre, luego buscarla. Listo mis bases
+
+bases <- list()
+bases[[1]] <- data_grupo
+bases[[2]] <- data_letra
+bases[[3]] <- data_provincia
+bases[[4]] <- data_provincia_letra
+bases[[5]] <- data_letra_clae2
+#bases[[6]] <- data_prov_letra_clae2
+
+
+# Usando for-loop:
+for ( f in 1:length(bases)) {
+  
+  bases[[f]]  <-  limpia_bases(bases[[f]])
+}
+
+
+# Con un assign paso estas bases ya limpias al environment
+
+nombres <- c('grupo', 'letra', 'provincia', 'provincia_letra', 'letra_clae2')
+
+for (f in 1:length(nombres)) {
+  
+  assign( paste0('data_', nombres[f]) , bases[[f]] )
+  
+}
+
+# me olvide de pasar los datos de las letras Z a un unico dato que sume los puestos y haga un promedio ponderado del resto de variables
+# Esto porq me quedaban varias filas de letra NA por fecha
+
+data_letra <- data_letra[,. (puestos= sum(puestos, na.rm=T), 
+                             share_mujeres = round(weighted.mean(share_mujeres, na.rm = T, puestos), digits = 2),
+                             w_mean = round(weighted.mean(w_mean, na.rm = T, puestos)),
+                             w_median = round(weighted.mean(w_median, na.rm = T, puestos))), 
+                             by= c('fecha', 'Grupo', 'letra')]
+
+
+data_provincia_letra <- data_provincia_letra[,. (puestos= sum(puestos, na.rm=T), 
+                             share_mujeres = round(weighted.mean(share_mujeres, na.rm = T, puestos), digits = 2),
+                             w_mean = round(weighted.mean(w_mean, na.rm = T, puestos)),
+                             w_median = round(weighted.mean(w_median, na.rm = T, puestos))), 
+                             by= c('fecha', 'Grupo', 'letra', 'provincia')]
+
+data_letra_clae2 <- data_letra_clae2[,. (puestos= sum(puestos, na.rm=T), 
+                             share_mujeres = round(weighted.mean(share_mujeres, na.rm = T, puestos), digits = 2),
+                             w_mean = round(weighted.mean(w_mean, na.rm = T, puestos)),
+                             w_median = round(weighted.mean(w_median, na.rm = T, puestos))),
+                             by= c('fecha', 'Grupo', 'letra', 'clae2')]
+
+
+
+
+
+#universos <- c('Total general', 'Total empresas', 'Privado')
+
+#variables <- c('puestos', 'share_mujeres', 'Remu_media', 'Remu_mediana')
+# La idea es armar tres paginas con las series en csv. Cada pagina debe tener distintas variables
+
+# Todas las bases con puestos
+
+puestos_privado_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, w_median, letra, Grupo))
+write.csv(puestos_privado_mensual_por_clae2, 'Publicacion DA/bases/puestos_privado_mensual_por_clae2.csv', row.names=F)
+
+puestos_privado_mensual_por_letra <- data_letra %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_privado_mensual_por_letra, 'Publicacion DA/bases/puestos_privado_mensual_por_letra.csv', row.names=F)
+
+puestos_privado_mensual_total <- data_grupo %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_privado_mensual_total, 'Publicacion DA/bases/puestos_privado_mensual_total.csv', row.names=F)
+
+puestos_total_empresas_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, w_median, letra, Grupo))
+write.csv(puestos_total_empresas_mensual_por_clae2, 'Publicacion DA/bases/puestos_total_empresas_mensual_por_clae2.csv', row.names=F)
+
+puestos_total_empresas_mensual_por_letra <- data_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_empresas_mensual_por_letra, 'Publicacion DA/bases/puestos_total_empresas_mensual_por_letra.csv', row.names=F)
+
+puestos_total_empresas_mensual_total <- data_grupo %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_empresas_mensual_total, 'Publicacion DA/bases/puestos_total_empresas_mensual_total.csv', row.names=F)
+
+
+
+
+puestos_privado_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_privado_mensual_por_letra_provincia, 'Publicacion DA/bases/puestos_privado_mensual_por_letra_provincia.csv', row.names=F)
+
+puestos_privado_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_privado_mensual_por_provincia, 'Publicacion DA/bases/puestos_privado_mensual_por_provincia.csv', row.names=F)
+
+puestos_total_empresas_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_empresas_mensual_por_letra_provincia, 'Publicacion DA/bases/puestos_total_empresas_mensual_por_letra_provincia.csv', row.names=F)
+
+puestos_total_empresas_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_empresas_mensual_por_provincia, 'Publicacion DA/bases/puestos_total_empresas_mensual_por_provincia.csv', row.names=F) 
+
+
+
+puestos_total_general_mensual_por_letra <- data_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_general_mensual_por_letra, 'Publicacion DA/bases/puestos_total_general_mensual_por_letra.csv', row.names=F) 
+
+puestos_total_general_mensual_por_provincia <- data_provincia %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_general_mensual_por_provincia, 'Publicacion DA/bases/puestos_total_general_mensual_por_provincia.csv', row.names=F) 
+
+puestos_total_general_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_general_mensual_por_letra_provincia, 'Publicacion DA/bases/puestos_total_general_mensual_por_letra_provincia.csv', row.names=F) 
+
+puestos_total_general_mensual_total <- data_grupo %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, w_median, Grupo))
+write.csv(puestos_total_general_mensual_total, 'Publicacion DA/bases/puestos_total_general_mensual_total.csv', row.names=F) 
+
+
+
+
+
+
+# Todas las bases con w_median
+
+w_median_privado_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, puestos, Grupo, letra))
+write.csv(w_median_privado_mensual_por_clae2, 'Publicacion DA/bases/w_median_privado_mensual_por_clae2.csv', row.names=F) 
+
+w_median_privado_mensual_por_letra <- data_letra %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_privado_mensual_por_letra, 'Publicacion DA/bases/w_median_privado_mensual_por_letra.csv', row.names=F) 
+
+w_median_privado_mensual_total <- data_grupo %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_privado_mensual_total, 'Publicacion DA/bases/w_median_privado_mensual_total.csv', row.names=F) 
+
+w_median_total_empresas_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, puestos, Grupo, letra))
+write.csv(w_median_total_empresas_mensual_por_clae2, 'Publicacion DA/bases/w_median_total_empresas_mensual_por_clae2.csv', row.names=F) 
+
+w_median_total_empresas_mensual_por_letra <- data_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_empresas_mensual_por_letra, 'Publicacion DA/bases/w_median_total_empresas_mensual_por_letra.csv', row.names=F) 
+
+w_median_total_empresas_mensual_total <- data_grupo %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_empresas_mensual_total, 'Publicacion DA/bases/w_median_total_empresas_mensual_total.csv', row.names=F)
+
+
+
+
+w_median_privado_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_privado_mensual_por_letra_provincia, 'Publicacion DA/bases/w_median_privado_mensual_por_letra_provincia.csv', row.names=F)
+
+w_median_privado_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_privado_mensual_por_provincia, 'Publicacion DA/bases/w_median_privado_mensual_por_provincia.csv', row.names=F)
+
+w_median_total_empresas_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_empresas_mensual_por_letra_provincia, 'Publicacion DA/bases/w_median_total_empresas_mensual_por_letra_provincia.csv', row.names=F)
+
+w_median_total_empresas_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_empresas_mensual_por_provincia, 'Publicacion DA/bases/w_median_total_empresas_mensual_por_provincia.csv', row.names=F)
+
+
+
+
+w_median_total_general_mensual_por_letra <- data_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_general_mensual_por_letra, 'Publicacion DA/bases/w_median_total_general_mensual_por_letra.csv', row.names=F)
+
+w_median_total_general_mensual_por_provincia <- data_provincia %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_general_mensual_por_provincia, 'Publicacion DA/bases/w_median_total_general_mensual_por_provincia.csv', row.names=F)
+
+w_median_total_general_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_general_mensual_por_letra_provincia, 'Publicacion DA/bases/w_median_total_general_mensual_por_letra_provincia.csv', row.names=F)
+
+w_median_total_general_mensual_total <- data_grupo %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_mean, puestos, Grupo))
+write.csv(w_median_total_general_mensual_total, 'Publicacion DA/bases/w_median_total_general_mensual_total.csv', row.names=F)
+
+
+
+
+
+
+# Todas las bases con w_mean
+
+w_mean_privado_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_median, puestos, Grupo, letra))
+write.csv(w_mean_privado_mensual_por_clae2, 'Publicacion DA/bases/w_mean_privado_mensual_por_clae2.csv', row.names=F)
+
+w_mean_privado_mensual_por_letra <- data_letra %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_privado_mensual_por_letra, 'Publicacion DA/bases/w_mean_privado_mensual_por_letra.csv', row.names=F)
+
+w_mean_privado_mensual_total <- data_grupo %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_privado_mensual_total, 'Publicacion DA/bases/w_mean_privado_mensual_total.csv', row.names=F)
+
+w_mean_total_empresas_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_median, puestos, Grupo, letra))
+write.csv(w_mean_total_empresas_mensual_por_clae2, 'Publicacion DA/bases/w_mean_total_empresas_mensual_por_clae2.csv', row.names=F)
+
+w_mean_total_empresas_mensual_por_letra <- data_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_empresas_mensual_por_letra, 'Publicacion DA/bases/w_mean_total_empresas_mensual_por_letra.csv', row.names=F)
+
+w_mean_total_empresas_mensual_total <- data_grupo %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_empresas_mensual_total, 'Publicacion DA/bases/w_mean_total_empresas_mensual_total.csv', row.names=F)
+
+
+
+
+w_mean_privado_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_privado_mensual_por_letra_provincia, 'Publicacion DA/bases/w_mean_privado_mensual_por_letra_provincia.csv', row.names=F)
+
+w_mean_privado_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Privado') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_privado_mensual_por_provincia, 'Publicacion DA/bases/w_mean_privado_mensual_por_provincia.csv', row.names=F)
+
+w_mean_total_empresas_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_empresas_mensual_por_letra_provincia, 'Publicacion DA/bases/w_mean_total_empresas_mensual_por_letra_provincia.csv', row.names=F)
+
+w_mean_total_empresas_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Total empresas') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_empresas_mensual_por_provincia, 'Publicacion DA/bases/w_mean_total_empresas_mensual_por_provincia.csv', row.names=F)
+
+
+
+
+w_mean_total_general_mensual_por_letra <- data_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_general_mensual_por_letra, 'Publicacion DA/bases/w_mean_total_general_mensual_por_letra.csv', row.names=F)
+
+w_mean_total_general_mensual_por_provincia <- data_provincia %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_general_mensual_por_provincia, 'Publicacion DA/bases/w_mean_total_general_mensual_por_provincia.csv', row.names=F)
+
+w_mean_total_general_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_general_mensual_por_letra_provincia, 'Publicacion DA/bases/w_mean_total_general_mensual_por_letra_provincia.csv', row.names=F)
+
+w_mean_total_general_mensual_total <- data_grupo %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(share_mujeres, w_median, puestos, Grupo))
+write.csv(w_mean_total_general_mensual_total, 'Publicacion DA/bases/w_mean_total_general_mensual_total.csv', row.names=F)
+
+
+
+
+
+
+
+
+# Las bases de share de mujer
+
+share_mujeres_privado_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Privado') %>% select(-c(w_mean, w_median, puestos, Grupo, letra))
+write.csv(share_mujeres_privado_mensual_por_clae2, 'Publicacion DA/bases/share_mujeres_privado_mensual_por_clae2.csv', row.names=F)
+
+share_mujeres_privado_mensual_por_letra <- data_letra %>% filter(Grupo== 'Privado') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_privado_mensual_por_letra, 'Publicacion DA/bases/share_mujeres_privado_mensual_por_letra.csv', row.names=F)
+
+share_mujeres_privado_mensual_total <- data_grupo %>% filter(Grupo== 'Privado') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_privado_mensual_total, 'Publicacion DA/bases/share_mujeres_privado_mensual_total.csv', row.names=F)
+
+share_mujeres_total_empresas_mensual_por_clae2 <- data_letra_clae2 %>% filter(Grupo== 'Total empresas') %>% select(-c(w_mean, w_median, puestos, Grupo, letra))
+write.csv(share_mujeres_total_empresas_mensual_por_clae2, 'Publicacion DA/bases/share_mujeres_total_empresas_mensual_por_clae2.csv', row.names=F)
+
+share_mujeres_total_empresas_mensual_por_letra <- data_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_empresas_mensual_por_letra, 'Publicacion DA/bases/share_mujeres_total_empresas_mensual_por_letra.csv', row.names=F)
+
+share_mujeres_total_empresas_mensual_total <- data_grupo %>% filter(Grupo== 'Total empresas') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_empresas_mensual_total, 'Publicacion DA/bases/share_mujeres_total_empresas_mensual_total.csv', row.names=F)
+
+
+
+
+share_mujeres_privado_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Privado') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_privado_mensual_por_letra_provincia, 'Publicacion DA/bases/share_mujeres_privado_mensual_por_letra_provincia.csv', row.names=F)
+
+share_mujeres_privado_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Privado') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_privado_mensual_por_provincia, 'Publicacion DA/bases/share_mujeres_privado_mensual_por_provincia.csv', row.names=F)
+
+share_mujeres_total_empresas_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo== 'Total empresas') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_empresas_mensual_por_letra_provincia, 'Publicacion DA/bases/share_mujeres_total_empresas_mensual_por_letra_provincia.csv', row.names=F)
+
+share_mujeres_total_empresas_mensual_por_provincia <- data_provincia %>% filter(Grupo== 'Total empresas') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_empresas_mensual_por_provincia, 'Publicacion DA/bases/share_mujeres_total_empresas_mensual_por_provincia.csv', row.names=F)
+
+
+
+share_mujeres_total_general_mensual_por_letra <- data_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_general_mensual_por_letra, 'Publicacion DA/bases/share_mujeres_total_general_mensual_por_letra.csv', row.names=F)
+
+share_mujeres_total_general_mensual_por_provincia <- data_provincia %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_general_mensual_por_provincia, 'Publicacion DA/bases/share_mujeres_total_general_mensual_por_provincia.csv', row.names=F)
+
+share_mujeres_total_general_mensual_por_letra_provincia <- data_provincia_letra %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_general_mensual_por_letra_provincia, 'Publicacion DA/bases/share_mujeres_total_general_mensual_por_letra_provincia.csv', row.names=F)
+
+share_mujeres_total_general_mensual_total <- data_grupo %>% filter(Grupo == 'Total general' & fecha > '2011-12-01') %>% select(-c(w_mean, w_median, puestos, Grupo))
+write.csv(share_mujeres_total_general_mensual_total, 'Publicacion DA/bases/share_mujeres_total_general_mensual_total.csv', row.names=F)
+
+
+# Solo con esto ya tengo 40 bases. SOLO DE TOTAL EMPRESAS Y PRIVADO. Y sin entrar a nivel provincia-clae2
+
+# Sumo 16 bases del universo TOTAL GENERAL. En este universo no desagrego en ningun caso por clae2, y empieza en 2012
+
+
