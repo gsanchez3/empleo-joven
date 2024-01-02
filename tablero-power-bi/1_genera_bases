@@ -1,0 +1,370 @@
+rm(list = ls())
+
+library(data.table)     # manipular grandes conjuntos de datos
+library(lubridate)      # manipular fechas
+library(openxlsx)       # leer archivos .xlsx  
+library(googlesheets4)
+library(plyr)
+library(tidyverse)
+library(fst)
+library(ggplot2)
+library(hrbrthemes)
+library(viridis)
+library(Mectritas)
+options(scipen=999) 
+
+# Tengo q setear el limite a actualizar de las mectras. Formato: AAAA-MM-DD
+# Esta fecha limite es la mectra mas vieja que se esta actualizando. De esta forma,
+# luego nos quedamos solo con lo sea estrictamente menor a esa fecha
+
+ymd_limite <- '2023-03-01' # 
+### ATENCION CAMBIAR TAMBIEN EL LOOP DE INICIO EN LAS MECTRAS
+s <- 03
+#### ATENCION CAMBIAR TAMBIEN LA BASE DE CUIT CON CLAE PONDERADO
+
+
+# Seteamos ruta general
+ruta_pc <- "C:/Users/Usuario/"
+ruta <- paste0(ruta_pc,"Documents/Cep Pedidos/Empleo_joven/")
+setwd(ruta)
+
+# Seteamos ruta de bases
+ruta_bases <- "C:/Users/Usuario/Documents/Bases CEP XXI/"
+
+# Seteamos la ruta de las mectras
+ruta_mectras <- "C:/Users/Usuario/Documents/Bases CEP XXI/MECTRA/Mectra FST"
+
+
+# Levantamos la base cuit_clae
+#cuit_clae <- fread(paste0(ruta_bases, "cuit_clae6_final_v04_2022.csv"))
+#cuit_clae <- cuit_clae[,.(cuit, clae6_final)]
+#setnames(cuit_clae, "clae6_final", "clae6")
+#cuit_clae <- cuit_clae[,cuit:=as.double(cuit)]
+
+### La pesada base cuit con clae ponderado
+clae_ponderado <- fread(r'(C:\Users\Usuario\Documents\Bases CEP XXI\CUITs con CLAE ponderado\CUITs con CLAE ponderado V2 2023-11-28 - Actualizado.csv)')
+clae_ponderado <- clae_ponderado[,.(cuit, clae6_pond, mes)]
+clae_ponderado <- clae_ponderado[,cuit:=as.double(cuit)]
+clae_ponderado <- clae_ponderado[,clae6_pond:=as.double(clae6_pond)]
+clae_ponderado <- clae_ponderado[,mes:=as.double(mes)]
+setnames(clae_ponderado, "clae6_pond", "clae6")
+
+### Base de Genero
+padron_cuil_genero <- read.fst(paste0(ruta_bases, "padron_cuil_genero_v2023-02.fst"),
+                               as.data.table = TRUE)
+
+# umbral salario
+umbral_salario <- fread(paste0(ruta_bases, "Umbral_remuneracion_minima_MECTRA.csv"),
+                        encoding = "UTF-8", dec = ",")
+umbral_salario <- umbral_salario[,umbral:=as.double(umbral)]
+
+
+### Base Edad. Utilizo la base ya modificada
+base_nac <- read.fst(paste0(ruta_bases, "base_consolidada_fnac_v2023-02.fst"),
+                     as.data.table = TRUE)
+
+#Armo la base para poder trabajar bien
+#base_nac <- base_nac[, birth:= str_replace(birth, "jan", "01")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "ene", "01")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "feb", "02")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "mar", "03")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "apr", "04")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "abr", "04")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "may", "05")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "jun", "06")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "jul", "07")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "aug", "08")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "ago", "08")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "sep", "09")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "oct", "10")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "nov", "11")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "dec", "12")]
+#base_nac <- base_nac[, birth:= str_replace(birth, "dic", "12")]
+
+#base_nac <- base_nac[,.(cuil, birth)]
+#write.fst(base_nac, paste0(ruta_bases, "base_consolidada_fnac_v2023-02.fst"), compress = 50, uniform_encoding = TRUE)
+
+# Listamos las mectras
+mectras <- list.files(ruta_mectras,
+                      pattern='*.fst',
+                      full.names = T,
+                      recursive = T)
+
+mectras <- mectras[str_detect(mectras, 'm2023')==T] # me quedo solo con ultimas mectras
+
+### Ahora quiero calcular los puestos totales, por provincia y por letra. Por otro lado, los salarios promedios y medianos, y por
+# otro el share de mujer
+
+## Llamo los data tables para ir agregando
+data_grupo <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='grupo', detectDates=T))[mes < ymd_limite] 
+data_letra <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='letra', detectDates=T))[mes < ymd_limite] 
+data_provincia <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='provincia', detectDates=T))[mes < ymd_limite] 
+data_provincia_letra <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='provincia_letra', detectDates=T))[mes < ymd_limite] 
+data_letra_clae2 <- setDT(read.xlsx(paste0(ruta, "serie_completa_v5.xlsx"), sheet='letra_clae2', detectDates=T))[mes < ymd_limite] 
+data_prov_letra_clae2 <- setDT(fread(paste0(ruta, "clae2_prov_universos_beta.csv")))[mes < ymd_limite]
+data_prov_letra_clae2 <- data_prov_letra_clae2[,mes:=as.Date(mes)]
+
+universos <- c('Total general', 'Total empresas', 'Privado')
+
+gc()
+
+### loop
+
+for(i in s:(length(mectras)-1)){
+  tmp <- read.fst(mectras[i], columns = c("cuit", "cuil", "zona", "modalidad", "remuneracion", "mes"), as.data.table = TRUE)
+  print(i)
+  tmp <- tmp %>% mectra_numerica()
+  # Filtramos las cajas y falopa
+  tmp <- tmp %>% limpia_cuits(indica_publico=F)
+  # Creo una variable para indicar si tuvo mas de un empleo
+  tmp <- tmp[, pluriempleo := .N, by=cuil]
+  # Creo una variable que va a servir de contador si el tipo esta en agencia. Vale 0 en todos los casos menos para los de agencia
+  tmp <- tmp[, agencia := 0]
+  
+  # Los casos de modalidad 102 empiezan a aparecer en septiembre del 2014, que es la mectra 90
+    # Vamos a explorar los casos q son de agencia
+    casos <- tmp %>% filter(pluriempleo>1 & remuneracion==0 & modalidad==102)
+    setorder(casos, -pluriempleo, cuil)
+    casos <- casos[,conteo:=.N, by='cuil']
+    casos_dif <- casos[conteo >1]
+    casos_dif <- unique(casos_dif$cuil) # para oct 2016 tengo 808 casos donde tendre q randomizar a q empresa le mando el sueldo
+    
+    casos_cuiles <- unique(casos$cuil) # cantidad de personas distintas que aparecen con modalidad 102 y remuneracion 0
+    agencieros <- tmp %>% filter(cuil %in% casos_cuiles) 
+    #setorder(agencieros, -pluriempleo, cuil)
+    
+    # supongamos que queremos sumar todas las remuneraciones y dejar al trabajador en una NO agencia. Es decir lo dejo en un caso donde tenga remu 0 y 
+    # modalidad 102. En la mayoria solo tienen 1 observacion asi por cuil, pero hay casos donde tienen muchas. En ese caso dejar al azar
+    
+    setorder(agencieros, cuil, remuneracion) # ordeno de forma q me quede primero la observacion donde no tienen remuneracion
+    agencieros <- agencieros[,index:=1:.N, by=cuil]
+    prueba_aux <- agencieros[index ==1]# En esta base tengo a una observacion por caso de agencia con una remuneracion igual a 0.
+    prueba_aux <- prueba_aux[!cuil %in% casos_dif] # Quito los casos dificiles que los voy a tratar aparte
+    prueba_aux$remuneracion <- NULL 
+    
+    # Trabajo aparte a los 800 casos donde hay varias remuneraciones 0 y entre estas hay q randomizar 
+    # De agencieros deberia separar a los cuiles dificiles, quedarme con sus remuneraciones 0 y elegir una al azar
+    
+    agencieros_dif <- agencieros[cuil %in% casos_dif] # me quedo con los cuiles dificiles
+    agencieros_dif <- agencieros_dif[remuneracion == 0] # sigo teniendo los mismos cuiles unicos, pero los casos donde tienen remu cero
+    # Ahora de estos casos me tengo que quedar con una observacion por cuil al azar
+    set.seed(55)
+    pruebaza <- ddply(agencieros_dif,.(cuil),function(x) x[sample(nrow(x),1),])
+    pruebaza$remuneracion <- NULL
+    
+    # deberia joinear pruebaza que tiene los casos dificiles con prueba_aux que tiene los normales
+    tmp1 <- rbind(prueba_aux, pruebaza)
+    
+    #Sumo las remuneraciones por cuil para todos los agencieros
+    agencieros_sal <- agencieros[,.(remuneracion = sum(remuneracion,na.rm=T)), by=c("cuil")] # colapso una obs por cuil con la suma de sus remus
+    
+    #Al mergear tengo finalmente una observacion por cuil, con la suma de sus remuneraciones ubicada en la empresa donde esta y no en la agencia
+    tmp1 <- merge(tmp1,agencieros_sal, by='cuil')
+    
+    # Ahora si, con una observacion por cuil de estos casos los sumo a la anterior
+    # elimino estos casos de tmp y los reemplazo por estas observaciones ya trabajadas
+    tmp <- tmp[!cuil %in% casos_cuiles]
+    tmp1$index <- NULL
+    # Antes de joinear con la base general voy a modificar el valor de la variable agencia para que sea 1
+    tmp1 <-  tmp1[, agencia := 1]
+    tmp <- rbind(tmp, tmp1)
+    
+    # listo me quedo una sola observacion por cuil en los casos de las agencias, no asi en  el resto de casos de pluriempleo...
+    # Eliminemos todo lo sobrante que usamos
+    rm(agencieros, agencieros_dif, agencieros_sal , casos, prueba_aux, pruebaza, tmp1, casos_cuiles, casos_dif )
+  
+  
+  # Resuelto este punto seguimos achicando la base
+  # Quedarme con los que tienen entre 18 y 25
+  tmp <- merge(tmp, base_nac, by="cuil", all.x = TRUE)
+  # A los que quedan como NA les aplico mectra demografia y luego mergeo
+  casos <- tmp %>% filter(is.na(birth))
+  casos <- casos %>% mectra_demografia(sexo=F, nacimiento=T)
+  casos <- casos[,.(cuil, Anio_nac)]
+  casos <- casos %>% filter(!is.na(Anio_nac))
+  casos <- casos[,fecha_nac := paste0("01", "01", casos$Anio_nac)] #Como solo consigo el año, supongo q nacieron el primero de enero
+  # Generalmente estos casos son pocos, asi q no influye mucho hacerlo asi. Pero lo mejor
+  # seria sortearlos entre los 12 meses del anio y listo
+  tmp <- merge(tmp, casos, by='cuil', all.x = T) #Mergeo con lo calculado
+  rm(casos)
+  tmp <- tmp[, birth:=fifelse(is.na(birth),fecha_nac, birth)] #Donde birth tenia NA lo reemplazo con lo calculado 
+  # Limites superiores e inferiores, buscamos quedarnos con quienes tienen entre 18 y 25 años
+  tmp <- tmp[, anio := as.numeric(substr(mes, 1, 4))]
+  tmp <- tmp[,limsup := anio -18]
+  tmp <- tmp[,liminf := anio -25]
+  # Estrategia: eliminar a los que no tienen entre 18 y 24 años inclusive
+  tmp <- tmp[, mes1 := substr(mes, 5, 6)]
+  tmp <- tmp[,limsup := paste0("01", tmp$mes1, tmp$limsup)]
+  tmp <- tmp[,liminf := paste0("01", tmp$mes1, tmp$liminf)]
+  # Ahora paso a todo como fecha 
+  tmp <- tmp[!is.na(birth)]
+  tmp <- tmp[,limsup := dmy(tmp$limsup)]
+  tmp <- tmp[,liminf := dmy(tmp$liminf)]
+  tmp <- tmp[,birth := dmy(tmp$birth)]
+  # calculo el entre fechas y elimino los q quedan fuera
+  tmp <- tmp %>%  mutate(birth = if_else(birth < liminf | birth > limsup,
+                                         NA_Date_, birth))
+  tmp <- tmp[!is.na(birth)]
+  #agrego actividad principal
+  tmp <- tmp[,mes:=as.double(mes)] #me pide pasar a doble mes para mergear
+  tmp <- merge(tmp, clae_ponderado, by=c("cuit", 'mes'), all.x = TRUE)
+  #Asignaci?n de descripcion de los claes
+  tmp <- tmp %>% add_claes(agregacion_deseada = c('letra', 'clae2'))
+  #zona
+  tmp <- merge(tmp, zona_loc, by="zona", all.x = TRUE)
+  setnames(tmp, 'zona_prov', 'provincia')
+  #umbral salario, dejo como NA las q estan debajo del umbral
+  tmp <- merge(tmp, umbral_salario, by = "anio", all.x = TRUE)
+  tmp <- tmp %>%  mutate(remuneracion = if_else(remuneracion < umbral,
+                                                NA_real_,  remuneracion))
+  ## Paso a formato fecha la variable mes
+  tmp <- tmp[,mes1 := paste0(tmp$mes, "01")]
+  tmp <- tmp[,mes := ymd(tmp$mes1)]
+  tmp$mes1 <- NULL
+  #Deflacto a precios diciembre del 2016
+  tmp <- tmp %>% deflactanator('2016-12-01', variables_deflactar = 'remuneracion', variable_mes = 'mes', pisar_datos = F)
+  # Ojo aca mejor no pisar y luego elegir cual graficar
+  #Asignacion de genero
+  tmp <- merge(tmp, padron_cuil_genero, by="cuil", all.x = TRUE)
+  #Cuando no estan en padron_cuil_genero
+  tmp <- tmp %>% mectra_demografia()
+  tmp <- tmp[, genero_final2 := fcase(is.na(genero_final)&mujer==0, 1,
+                                      is.na(genero_final)&mujer==1, 2,
+                                      default = NA_real_)]
+  #table(tmp$genero_final, useNA = "always")
+  tmp <- tmp[, genero_final := fifelse(is.na(genero_final), genero_final2, genero_final)]
+  tmp <- tmp[, genero_final := fifelse(genero_final==2, 1, 0)]
+  tmp$genero_final2 <- NULL
+  tmp$mujer <- NULL
+  #Agrego columna del grupo para luego agrupar a todos juntos
+  #tmp$Grupo <- "Jovenes" 
+  
+  # En esta base voy a trabajar con todas las relaciones laborales, pudiendo haber varias por persona.
+  # Solamente los casos que sean de agencia estan reducidos a una observacion por persona
+  
+  ##Resultados. Recordemos que buscamos 6 agregaciones distintas para las mismas variables.
+  
+  ### Ojota si queres dividir en publico, privado y productivo, voy a tener q armar 3 bases distintas con las mismas desagregaciones.
+  ## por tanto deberia armar un loop q haga las 6 agregaciones
+  
+  # la estrategia va a ser cortar los 3 casos deseados con la funcion limpia_cuits, y utilizar la columna Grupo, para describir el universo...
+  # Luego ir sumando todo a los mismos agregados, de forma que vaya quedando para cada mes por triplicado la info
+  
+  for (p in 1:length(universos)){
+    
+    if (p == 2) {
+      tmp <- tmp %>% limpia_cuits(elimina_pub_no_prod = T, indica_publico = F)
+    }
+    
+    if (p == 3) {
+      tmp <- tmp %>% limpia_cuits(elimina_publico = T, indica_publico = F)
+    }
+    
+    tmp$Grupo <- universos[p]
+    
+    #Por grupo general
+    tmp_grupo <- tmp[,.(puestos = .N, empleadoras = uniqueN(cuit), mujeres = sum(genero_final,na.rm=T), 
+                        agencias = sum(agencia, na.rm = T),
+                        Remu_media = mean(remuneracion,na.rm=T), Remu_mediana = median(remuneracion,na.rm=T),
+                        Remu_media_cons = mean(remuneracion_constante,na.rm=T), Remu_mediana_cons = median(remuneracion_constante,na.rm=T)
+    ),
+    by=c('Grupo', 'anio', 'mes')]
+    data_grupo <- rbind(data_grupo, tmp_grupo)
+    
+    #Por provincia
+    tmp_provincia <- tmp[,.(puestos = .N, empleadoras = uniqueN(cuit), mujeres = sum(genero_final,na.rm=T),
+                            agencias = sum(agencia, na.rm = T),
+                            Remu_media = mean(remuneracion,na.rm=T), Remu_mediana = median(remuneracion,na.rm=T),
+                            Remu_media_cons = mean(remuneracion_constante,na.rm=T), Remu_mediana_cons = median(remuneracion_constante,na.rm=T)
+    ),
+    by=c('Grupo', 'provincia', 'anio', 'mes')]
+    setorder(tmp_provincia, provincia)
+    data_provincia <- rbind(data_provincia, tmp_provincia)
+    
+    ### Por letra
+    tmp_letra <- tmp[,.(puestos = .N, empleadoras = uniqueN(cuit), mujeres = sum(genero_final,na.rm=T),
+                        agencias = sum(agencia, na.rm = T),
+                        Remu_media = mean(remuneracion,na.rm=T), Remu_mediana = median(remuneracion,na.rm=T),
+                        Remu_media_cons = mean(remuneracion_constante,na.rm=T), Remu_mediana_cons = median(remuneracion_constante,na.rm=T)
+    ),
+    by=c('Grupo', 'letra', 'letra_desc', 'anio', 'mes')]
+    setorder(tmp_letra, letra)
+    data_letra <- rbind(data_letra, tmp_letra)
+    
+    ### Por letra y clae2
+    tmp_letra_clae2 <- tmp[,.(puestos = .N, empleadoras = uniqueN(cuit), mujeres = sum(genero_final,na.rm=T),
+                              agencias = sum(agencia, na.rm = T),
+                              Remu_media = mean(remuneracion,na.rm=T), Remu_mediana = median(remuneracion,na.rm=T),
+                              Remu_media_cons = mean(remuneracion_constante,na.rm=T), Remu_mediana_cons = median(remuneracion_constante,na.rm=T)
+    ),
+    by=c('Grupo', 'letra', 'letra_desc', 'clae2', 'clae2_desc', 'anio', 'mes')]
+    setorder(tmp_letra_clae2, letra, clae2)
+    data_letra_clae2 <- rbind(data_letra_clae2, tmp_letra_clae2)
+    
+    ### Por provincia y letra
+    tmp_prov_letra <- tmp[,.(puestos = .N, empleadoras = uniqueN(cuit), mujeres = sum(genero_final,na.rm=T),
+                             agencias = sum(agencia, na.rm = T),
+                             Remu_media = mean(remuneracion,na.rm=T), Remu_mediana = median(remuneracion,na.rm=T),
+                             Remu_media_cons = mean(remuneracion_constante,na.rm=T), Remu_mediana_cons = median(remuneracion_constante,na.rm=T)
+    ),
+    by=c('Grupo', 'provincia', 'letra', 'letra_desc', 'anio', 'mes')]
+    setorder(tmp_prov_letra, provincia, letra)
+    data_provincia_letra <- rbind(data_provincia_letra, tmp_prov_letra)
+    
+    ### Por provincia, letra y clae2
+    tmp_prov_letra_clae2 <- tmp[,.(puestos = .N, empleadoras = uniqueN(cuit), mujeres = sum(genero_final,na.rm=T),
+                                   agencias = sum(agencia, na.rm = T),
+                                   Remu_media = mean(remuneracion,na.rm=T), Remu_mediana = median(remuneracion,na.rm=T),
+                                   Remu_media_cons = mean(remuneracion_constante,na.rm=T), Remu_mediana_cons = median(remuneracion_constante,na.rm=T)
+    ),
+    by=c('Grupo', 'provincia', 'letra', 'letra_desc', 'clae2', 'clae2_desc', 'anio', 'mes')]
+    setorder(tmp_prov_letra_clae2, provincia, letra, clae2)
+    data_prov_letra_clae2 <- rbind(data_prov_letra_clae2, tmp_prov_letra_clae2)
+    
+    rm(tmp_grupo, tmp_provincia, tmp_letra, tmp_letra_clae2, tmp_prov_letra, tmp_prov_letra_clae2)
+  }  
+  #Vemos por donde vamos, borramos temporales y sigue el loop
+  print('Cargado')
+  rm(tmp)
+  gc()
+}
+
+
+# Guardamos un excel con lo trabajado
+wb <- createWorkbook()
+addWorksheet(wb, "grupo")
+addWorksheet(wb, "provincia")
+addWorksheet(wb, "letra")
+addWorksheet(wb, "letra_clae2")
+addWorksheet(wb, "provincia_letra")
+
+# Le escribimos lo solicitado en cada una de las pestañas
+writeDataTable(wb,
+               sheet = "grupo",
+               data_grupo)
+writeDataTable(wb,
+               sheet = "provincia",
+               data_provincia)
+writeDataTable(wb,
+               sheet = "letra",
+               data_letra)
+writeDataTable(wb,
+               sheet = "letra_clae2",
+               data_letra_clae2)
+writeDataTable(wb,
+               sheet = "provincia_letra",
+               data_provincia_letra)
+
+# Exportamos
+saveWorkbook(wb,
+             paste0(ruta,"serie_completa_v5.xlsx"), # lo voy a llamar v5 para diferenciarlo de la 4 al contar con mas informacion
+             overwrite = TRUE)
+
+#### Falta guardar el archivo mas pesado que es el de data_prov_letra_clae2
+
+write.csv(data_prov_letra_clae2, r"(C:\Users\Usuario\Documents\Cep Pedidos\Empleo_joven\clae2_prov_universos_beta.csv)",row.names = F)
+
+
+## Me fijo como esta la base
+
+#prueba <- fread(r'(C:\Users\Usuario\Documents\Cep Pedidos\Empleo_joven\clae2_prov_universos.csv)')
